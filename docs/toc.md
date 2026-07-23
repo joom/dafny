@@ -65,6 +65,7 @@ And some books:
 
 Miscellaneous notes about compiling Dafny code
    * [Go](Compilation/Go)
+   * [OCaml](Compilation/OCaml)
    * [Strings and Characters](Compilation/StringsAndChars)
    * [Reference values](Compilation/ReferenceTypes)
    * [Automatic Initialization of Variables](Compilation/AutoInitialization)

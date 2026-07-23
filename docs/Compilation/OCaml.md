@@ -5,173 +5,195 @@ title: Dafny compilation to OCaml
 Dafny compilation to OCaml
 ===========================
 
-The OCaml backend (`--target:ml`) favors simplicity and readability of the
-implementation over performance and completeness. If you're reading the
-compiler source to understand how it works, `Source/DafnyCore/Backends/OCaml/`
-and `Source/DafnyRuntime/DafnyRuntimeOCaml/dafnyRuntime.ml` are much shorter
-than the other backends, at some cost in idiomaticity and a handful of
-semantic gaps described below.
+The OCaml backend is selected with `--target:ml`. It is currently an
+**unstable** backend: ordinary verified Dafny programs are supported, but the
+backend is not yet feature-complete and is skipped by the default
+all-compilers test sweep.
+
+The implementation deliberately favors a small, readable compiler and runtime
+over idiomatic generated OCaml or asymptotically efficient collections. The
+main sources are:
+
+- `Source/DafnyCore/Backends/OCaml/OCamlBackend.cs`
+- `Source/DafnyCore/Backends/OCaml/OCamlCodeGenerator.cs`
+- `Source/DafnyRuntime/DafnyRuntimeOCaml/dafnyRuntime.ml`
 
 Compiling and running
-----------------------
+---------------------
 
-```
+The backend targets OCaml 4.14 and invokes `ocamlfind ocamlopt`. The native
+compiler, findlib, and the Zarith package must be available on `PATH`. With
+opam, the additional library can be installed with `opam install zarith`.
+
+```console
 dafny run --target:ml Example.dfy
-dafny build --target:ml Example.dfy   # produces Example.ml (and Example.exe)
+dafny build --target:ml Example.dfy
 ```
 
-The backend shells out to `ocamlfind ocamlopt` with the [Zarith](https://github.com/ocaml/Zarith)
-package, so an OCaml toolchain (`ocamlfind`, `ocamlopt`) with `zarith` installed
-(`opam install zarith`) needs to be on `PATH`.
+`build` emits `Example.ml` and `Example.exe`, plus one `.ml` file per
+non-default Dafny module. Additional `.ml` inputs are accepted. This is not
+Dafny separate compilation: all Dafny source is still translated as one
+program.
 
-Representation of Dafny values
--------------------------------
+`ocamlopt` normally writes `.cmi`, `.cmx`, and `.o` files beside its inputs.
+The backend instead copies the runtime, generated modules, additional inputs,
+and main source into a private temporary directory. Only the requested
+executable is written to the output directory. The main source is staged
+under a valid OCaml compilation-unit name, so Dafny filenames containing
+characters such as `-` do not cause OCaml warning 24.
 
-Every Dafny type is represented as an ordinary, unparameterized OCaml value —
-there is no runtime type-descriptor machinery:
+Value representations
+---------------------
 
-  - `bool` is `bool`.
-  - `char` is a plain OCaml `int` holding a Unicode code point (regardless of
-    whether `--unicode-char` is set).
-  - `int`, `nat`, bit-vector types, and native integer types (`int32`, etc.)
-    are *all* represented uniformly as Zarith's arbitrary-precision `Z.t`.
-    There's no `int`/`bv32`/`uint64` distinction in the generated code, and no
-    overflow checking is skipped for "native" types the way it is in some
-    other backends — everything just uses unbounded arithmetic.
-  - `real` is Zarith's arbitrary-precision rational `Q.t`.
-  - `seq<T>` and `array<T>` are both plain OCaml `'a array`. A `seq` is
-    conceptually immutable — operations like `s + t` or `s[i := v]` always
-    allocate a new array — while an `array<T>` is mutated in place.
-  - `string` is `seq<char>`, i.e. `int array`.
-  - `set<T>` is a deduplicated `'a list`.
-  - `multiset<T>` is a `(element, multiplicity) list`, kept free of
-    zero-multiplicity entries.
-  - `map<K, V>` is a `(key, value) list` association list, kept free of
-    duplicate keys.
-  - Tuples are native OCaml tuples.
-  - A `datatype` compiles to an OCaml variant type, one constructor per
-    Dafny constructor, with the constructor's non-ghost formals as plain
-    positional (tupled) arguments — e.g. `datatype Tree = Leaf | Node(Tree,
-    int, Tree)` compiles to `type tree_t = Leaf | Node of tree_t * Int.t *
-    tree_t`.
-  - A `class` compiles to a mutable OCaml record.
+- `bool` is OCaml `bool`.
+- `int`, `ORDINAL`, bit vectors, and native integer types all use Zarith
+  `Z.t`. Bit-vector operations still truncate to their declared width.
+- `real` uses Zarith `Q.t`, preserving exact rational arithmetic. `Floor`
+  follows Dafny semantics, including negative values. Printing follows Dafny's
+  textual convention: a real whose reduced denominator has prime factors other
+  than 2 and 5 prints as an unevaluated fraction (e.g. `(20.0 / 3.0)`), and
+  anything else prints as an exact terminating decimal.
 
-All of the above live in a single runtime module (`DafnyRuntime`, from
-`dafnyRuntime.ml`) with straightforward implementations — e.g. `set`
-operations are `O(n)` list scans, not a balanced-tree `Set.Make`. This keeps
-the runtime a single short, ordinary-looking file, at a real performance
-cost for large collections.
+  Note that `Q.t` keeps rationals in lowest terms, so printing agrees with the
+  Go and Python backends (which likewise use normalizing rational types) but
+  not always with C# and Java, whose `BigRational` does not reduce. For example
+  `9.0 / 6.0` prints as `1.5` here, as it does under Go and Python, but as
+  `(9.0 / 6.0)` under C#. A test that prints a non-reduced real therefore
+  cannot share one `.expect` file across all backends.
+- `char` is an OCaml `int`. With `--unicode-char=true` it contains a Unicode
+  scalar value; in legacy mode it contains a UTF-16 code unit. Strings and
+  character sequences are converted to and from UTF-8 at the OCaml boundary.
+- `seq<T>` is an OCaml `'a array`. Updates copy the array.
+- A one-dimensional Dafny array uses an OCaml `'a array` as mutable backing
+  storage. Multi-dimensional arrays use an `ArrayN.t` record with dimensions
+  and a row-major flat backing array.
+- Every Dafny array reference, including a statically non-null one, is
+  option-wrapped. `None` represents `null`; a non-null auto-initialized array
+  is an empty array wrapped in `Some`.
+- `set<T>` is a deduplicated list.
+- `multiset<T>` is a list of element/multiplicity pairs without zero
+  multiplicities.
+- `map<K,V>` is an association list without duplicate keys. `Keys`, `Values`,
+  and `Items` construct the corresponding Dafny sets.
+- Tuples use native OCaml tuples. Zero-tuples use `unit`, and a one-component
+  Dafny tuple is represented by its component.
+- Datatypes use OCaml variants. Codatatypes use variants under `Lazy.t`, so
+  corecursive construction remains lazy.
+- Newtypes and subset types erase to their base representation, while their
+  compiled witnesses and constraint predicates remain available through
+  companion values.
+- Class and trait references are option-wrapped records. `object` is
+  `Obj.t option` containing a class identity token or an array identity.
 
-Everything is one file, one flat namespace
---------------------------------------------
+Collection operations and equality use Dafny semantics rather than OCaml
+structural equality. In particular, set/map order is irrelevant, datatype and
+tuple fields are compared recursively, type parameters use their descriptors,
+and classes, traits, arrays, and `object` use reference identity. The
+list-based collection representations keep the runtime simple but make many
+operations linear or quadratic.
 
-Dafny's modules, classes, and datatypes are *not* translated to OCaml
-modules. Instead, every top-level Dafny declaration is flattened into one
-long `type ... and ... and ...` block (all record/variant declarations) and
-one long `let rec ... and ... and ...` block (all function/method bodies),
-covering the whole program. Every name is mangled with its enclosing
-module and class/datatype name to keep it unique (e.g. a `Node` field
-`left` on a class in module `M` becomes the record field `m__Node__left`).
-
-This is the main way this backend trades idiomaticity for simplicity: real
-OCaml code would use nested modules matching Dafny's module structure, and
-`and`-chaining the entire program's functions together (rather than only the
-functions that are actually mutually recursive) is not how anyone would
-write OCaml by hand. But it means the compiler never has to worry about
-*declaration order* (OCaml normally requires "define before use"; Dafny does
-not) or about generating nested `module M = struct ... end` blocks correctly.
-
-Everything is a `ref`
------------------------
-
-Every local variable and formal parameter compiles to an OCaml `ref` cell:
-a Dafny declaration `var x := 5;` becomes `let x = ref (DafnyRuntime.Int.of_string "5") in`,
-reads of `x` become `!x`, and assignments become `x := ...`. This is not
-idiomatic OCaml (real OCaml code would use `let`-rebinding and avoid mutable
-state wherever possible) but it means the compiler doesn't need to track
-which Dafny bindings are actually reassigned — every binding is treated
-uniformly, which keeps the statement-compiling code simple.
-
-Instance methods and fields
+Generics and type descriptors
 -----------------------------
 
-Because Dafny methods and functions can take any number of arguments, calls
-compile to a uniform convention based on how many non-ghost arguments there
-are: zero arguments compiles to a `unit` parameter (`f ()`), exactly one
-compiles to a bare parameter (`f x`), and two or more compile to a single
-tupled parameter (`f (x, y)`). This exactly matches how a Dafny call
-`f(x, y)` reads as OCaml source (function application to the tuple `(x,
-y)`), so call sites don't need special-casing based on arity.
+OCaml type parameters preserve static polymorphism. Where compiled Dafny
+semantics need information about a type parameter, generated code also passes
+a runtime descriptor containing:
 
-Instance (non-`static`) methods and functions are compiled as ordinary
-top-level functions taking the receiver as an explicit first argument (e.g.
-`let counter__increment this amt = ...`). However, since Dafny always
-compiles an instance call as `receiver.name(args)`, every class record also
-carries one closure field per instance method/function, each wired up to
-call the corresponding top-level function with the record itself as the
-receiver (constructed via a self-referential `let rec this = { ...;
-increment = (fun amt -> counter__increment this amt) } in this`). So
-`c.Increment(5)` compiles to the perfectly ordinary-looking record field
-call `c.increment(5)`, which just happens to close over `c` already.
+- a default-value constructor,
+- semantic equality, and
+- conversion to a Dafny-formatted string.
 
-Traits (and therefore any kind of dynamic dispatch or subtyping between
-classes) are not supported, so there's no need for these closures to support
-overriding.
+Descriptors support generic auto-initialization, equality in generic
+collections and datatypes, and printing generic values. Class and trait
+records retain descriptors needed by instance members; static members,
+datatype helpers, and generic member tear-offs receive them explicitly.
 
-Control flow
--------------
+Declarations, modules, and names
+--------------------------------
 
-`if`/`while`/blocks compile using `begin ... end` (OCaml's parenthesization
-keywords) in place of C-style `{ ... }`, with Dafny statement sequences
-becoming OCaml `;`-separated sequences (each "statement" is unit-typed).
+Each explicit Dafny module becomes an OCaml compilation unit. The default
+module is folded into the main `.ml` file. Generated module basenames encode
+case, so modules such as `Foo` and `foo` remain distinct on case-insensitive
+filesystems.
 
-`break`/`continue`/early `return` (and the multi-branch bodies functions with
-`match` or `if`-expressions compile to) all use OCaml exceptions:
-`raise Dafny_break_<label>` / `Dafny_continue_<label>`, caught by a `try`
-wrapped around the applicable loop or labeled statement, and
-`raise (DafnyRuntime.Return (Obj.repr value))`, caught once by a `try`
-wrapped around the whole body of every method, function, and lambda. This
-means a plain `let () = ...` control-flow style (which is how idiomatic
-OCaml would compile a function with several `if`/`match` branches, each
-simply being the tail expression of its branch) isn't used — every
-Dafny function's body is compiled the same way regardless of whether it's a
-single expression or requires early returns, again trading idiomaticity for
-uniformity.
+Within a compilation unit, class records and datatype variants are emitted as
+one recursive `type ... and ...` group. Top-level values are handled
+differently: the compiler builds their dependency graph, orders its strongly
+connected components, and emits `let rec ... and ...` only for values that
+are genuinely recursive. Non-recursive values remain ordinary `let`
+bindings, preserving OCaml generalization and avoiding the value restriction.
+Dependency scanning ignores strings and nested OCaml comments.
 
-A tail-recursive Dafny function/method (`f.IsTailRecursive`) is compiled by
-wrapping its body in `while true do ... done`: the call site reassigns the
-formal `ref`s and "jumps to the top" by raising a dedicated exception caught
-immediately around the loop body. In practice, OCaml's native tail-call
-optimization would have handled a simple self-recursive call in tail
-position just as well without this — but the `while`-loop form is what
-`EmitJumpToTailCallStart` naturally compiles to given the framework's
-"reassign formals, then jump" calling convention.
+All Dafny names are encoded injectively. Compound names length-prefix their
+components, and constructors include their enclosing datatype, so source
+case, underscores, shared constructor names, and delimiter-like text cannot
+collide after flattening. Cross-module references use an OCaml module
+qualifier.
+
+Locals, calls, and control flow
+-------------------------------
+
+Every local variable and formal parameter is compiled to an OCaml `ref`.
+Reads use `!` and assignments use `:=`. This is intentionally less idiomatic
+than rebinding immutable values, but closely matches Dafny's mutable statement
+model.
+
+Calls use one uniform argument value:
+
+- no arguments use `unit`,
+- one argument uses that argument directly, and
+- multiple arguments use a tuple.
+
+For a direct instance body, the receiver participates in the same value as
+the explicit arguments. Class records also contain closures for instance
+functions, methods, and constants. Trait records act as vtables: callable
+members are closures, mutable fields are getter/setter closures, and an
+upcast preserves the original identity token and type descriptors. This
+supports dynamic dispatch through inherited and generic traits, including
+default implementations and member tear-offs.
+
+`break`, `continue`, tail-call jumps, early returns, `halt`, and
+`try`/`recover` use dedicated OCaml exceptions. Ordinary statement blocks use
+`begin ... end`. Non-sequentializable `forall` statements first collect their
+type-erased assignment ingredients and apply them after enumeration, matching
+the backend framework's alias-safe strategy.
+
+Compiled bounds
+---------------
+
+Compiled quantifiers, comprehensions, and assign-such-that constructs consume
+lazy OCaml `Stdlib.Seq.t` bounds. Supported bounds include:
+
+- all combinations of lower- and upper-bounded integer ranges,
+- booleans and characters,
+- elements of sequences, sets, multisets, and maps,
+- all subsets of a finite set,
+- exact-value bounds, and
+- all constructors of a finite datatype.
+
+`exists` and `forall` short-circuit. Character enumeration follows the chosen
+Unicode or legacy UTF-16 mode.
 
 Known limitations
--------------------
+-----------------
 
-Compared to the more complete backends (C#, Java, Go, ...), this backend does
-not support:
+The feature-support table in the Dafny reference is authoritative. The main
+unsupported areas are:
 
-  - **Traits**, and therefore no dynamic dispatch, virtual methods, or
-    upcasting/downcasting between class types.
-  - **Co-inductive datatypes** (codatatypes) or **iterators**.
-  - **Multi-dimensional arrays** (only `array<T>`, not `array2<T>` etc.).
-  - Compiled **quantifiers**, **map comprehensions**, or **assign-such-that**
-    (`:|`) expressions.
-  - **`forall` statements that can't be sequentialized** (the ones that need
-    to build up a list of "ingredient" tuples before applying them).
-  - **`null` is not a distinguished value.** There's no OCaml analogue of a
-    null pointer for a plain record, so `null` compiles to a fresh
-    all-default instance of the class rather than a sentinel value. This
-    means `x == null` is not reliable — it's a physical-equality check, and
-    a freshly-built default instance is never `==` to any other instance,
-    including another evaluation of `null` itself. Code that checks
-    `x == null` before *setting* `x`, or that never compares against `null`
-    at all, works fine; code that relies on `x == null` being true after
-    `x := null` does not.
-  - Extern declarations / FFI to hand-written OCaml code.
+- Iterators. OCaml 4.14 has no effect-handler/coroutine mechanism that can
+  directly resume a Dafny iterator after `yield`; a thread-based emulation is
+  intentionally outside this backend's current scope.
+- Runtime type-test expressions (`x is T`), subset-type tests, and
+  trait-to-class downcasts.
+- Quantifier and comprehension bounds that narrow a reference type, such as
+  `set x: C | x in s` where `s` has a trait element type. Filtering these
+  needs the same dynamic type test as `x is T`.
+- External classes, external constructors, and external modules whose name
+  consists only of underscores.
+- Separate Dafny compilation.
+- Dafny standard libraries and the `ActionsExterns` standard-library layer.
+- Method synthesis, execution coverage reports, and placing every compiled
+  built-in type in the runtime library.
 
-Programs that stay within ordinary functional/imperative Dafny — classes,
-datatypes, generics, closures, collections, arithmetic — are expected to
-work.
+Unsupported features are reported through Dafny's normal backend feature
+diagnostics rather than failing later in generated OCaml.

@@ -77,10 +77,11 @@ jobs:
       uses: actions/setup-dotnet@v5
       with:
         dotnet-version: 6.0.x
-    - name: C++ for ubuntu 24.04
+    - name: C++ and OCaml for ubuntu 24.04
       if: matrix.os == 'ubuntu-24.04'
       run: |
-        sudo apt-get install -y build-essential
+        sudo apt-get update
+        sudo apt-get install -y build-essential ocaml-nox ocaml-findlib libzarith-ocaml-dev
     - name: Set up oldest supported JDK
       if: matrix.target-language-version != 'newest'
       uses: actions/setup-java@v5

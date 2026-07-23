@@ -4188,11 +4188,15 @@ namespace Microsoft.Dafny.Compilers {
             wIndex => EmitExprAsNativeInt(new LiteralExpr(null, ii) {
               Type = Type.Int
             }, false, wIndex, wStmts)
-          ], v.Type, wStmts);
+          ], allocateArray.ElementType, wStmts);
           if (ii == 0 && nwElement0 != null) {
             EmitIdentifier(nwElement0, wElement);
           } else {
-            EmitExpr(v, false, wElement, pwStmts);
+            var coercedElement = EmitCoercionIfNecessary(
+              v.Type, allocateArray.ElementType, v.Origin, wElement);
+            coercedElement = EmitDowncastIfNecessary(
+              v.Type, allocateArray.ElementType, v.Origin, coercedElement);
+            EmitExpr(v, false, coercedElement, pwStmts);
           }
           EmitIdentifier(nw, wArray);
           EndStmt(wStmts);
@@ -5268,6 +5272,7 @@ namespace Microsoft.Dafny.Compilers {
         var bv = pat.Var;
         if (!bv.IsGhost) {
           CreateIIFE(IdName(bv), bv.Type, bv.Origin, bodyType, pat.Origin, wr, ref wStmts, out var wrRhs, out var wrBody);
+          wrRhs = EmitCoercionIfNecessary(rhsType, bv.Type, bv.Origin, wrRhs);
           wrRhs = EmitDowncastIfNecessary(rhsType, bv.Type, bv.Origin, wrRhs);
           rhs(wrRhs);
           return wrBody;

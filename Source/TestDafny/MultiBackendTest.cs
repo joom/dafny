@@ -114,9 +114,9 @@ public class MultiBackendTest {
     string rawCompilerFilter = options.Compilers ??
                                Environment.GetEnvironmentVariable("DAFNY_INTEGRATION_TESTS_ONLY_COMPILERS")
                                ?? "";
-    string[] compilerFilter = rawCompilerFilter
-      .Split(",")
-      .Where(name => name.Trim() != "").ToArray();
+    var compilerFilter = rawCompilerFilter
+      .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+      .ToHashSet(StringComparer.Ordinal);
 
 
     // First verify the file (and assume that verification should be successful).
@@ -205,7 +205,12 @@ public class MultiBackendTest {
     var success = true;
     foreach (var plugin in plugins) {
       foreach (var compiler in plugin.GetCompilers(DafnyOptions.Default)) {
-        if (!compiler.IsStable || (compilerFilter.Any() && !compilerFilter.Contains(compiler.TargetId))) {
+        var explicitlySelected = compilerFilter.Contains(compiler.TargetId);
+        // Unstable backends are skipped by the default all-compiler sweep, but an explicit
+        // --compilers/DAFNY_INTEGRATION_TESTS_ONLY_COMPILERS selection is a request to test
+        // exactly that backend.
+        if ((!compiler.IsStable && !explicitlySelected) ||
+            (compilerFilter.Count > 0 && !explicitlySelected)) {
           continue;
         }
 

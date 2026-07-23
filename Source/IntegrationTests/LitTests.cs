@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.CommandLine;
 using System.CommandLine.Builder;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -42,6 +44,37 @@ namespace IntegrationTests {
     ];
 
     private static readonly LitTestConfiguration Config;
+
+    // Probes for an optional toolchain, so an absent one turns into a skipped test rather than
+    // a failing one. lit.site.cfg performs the equivalent probe for the standalone lit runner;
+    // the two need to agree on which features they announce.
+    private static bool CommandSucceeds(string executable, params string[] arguments) {
+      try {
+        var startInfo = new ProcessStartInfo {
+          FileName = executable,
+          UseShellExecute = false,
+          CreateNoWindow = true,
+          RedirectStandardOutput = true,
+          RedirectStandardError = true
+        };
+        foreach (var argument in arguments) {
+          startInfo.ArgumentList.Add(argument);
+        }
+        using var process = Process.Start(startInfo);
+        if (process == null) {
+          return false;
+        }
+        if (!process.WaitForExit(5000)) {
+          process.Kill(true);
+          process.WaitForExit();
+          return false;
+        }
+        return process.ExitCode == 0;
+      } catch (Exception e) when (e is Win32Exception or InvalidOperationException) {
+        // The executable is not on PATH, or is not something this OS can start.
+        return false;
+      }
+    }
 
     static LitTests() {
       // Set this to true in order to debug the execution of commands like %dafny.
@@ -233,6 +266,10 @@ namespace IntegrationTests {
         features = ["macosx", "posix"];
       } else {
         throw new Exception($"Unsupported OS: {RuntimeInformation.OSDescription}");
+      }
+      if (CommandSucceeds("ocamlopt", "-version") &&
+          CommandSucceeds("ocamlfind", "query", "zarith")) {
+        features = features.Append("ocaml").ToArray();
       }
 
       substitutions["%args"] = DafnyCliTests.NewDefaultArgumentsForTesting;

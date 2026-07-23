@@ -544,8 +544,12 @@ namespace Microsoft.Dafny.Compilers {
             var termLeftWriter = EmitMapBuilder_Add(mapType, e.Origin, collection_name, e.Term, inLetExprBody, wr);
             if (e.TermLeft == null) {
               Contract.Assert(e.BoundVars.Count == 1);
+              termLeftWriter = EmitCoercionIfNecessary(e.BoundVars[0].Type, mapType.Domain, e.Origin, termLeftWriter);
+              termLeftWriter = EmitDowncastIfNecessary(e.BoundVars[0].Type, mapType.Domain, e.Origin, termLeftWriter);
               EmitIdentifier(IdName(e.BoundVars[0]), termLeftWriter);
             } else {
+              termLeftWriter = EmitCoercionIfNecessary(e.TermLeft.Type, mapType.Domain, e.Origin, termLeftWriter);
+              termLeftWriter = EmitDowncastIfNecessary(e.TermLeft.Type, mapType.Domain, e.Origin, termLeftWriter);
               EmitExpr(e.TermLeft, inLetExprBody, termLeftWriter, wStmts);
             }
 

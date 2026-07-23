@@ -690,7 +690,10 @@ namespace Microsoft.Dafny.Compilers {
           writer);
         var right = new ConcreteSyntaxTree();
         EmitExpr(litExpression, false, right, writer);
-        EmitBinaryExprUsingConcreteSyntax(guardWriter, Type.Bool, preOpString, opString, new LineSegment(sourceName), right, callString, staticCallString, postOpString);
+        var left = new ConcreteSyntaxTree();
+        EmitIdentifier(sourceName, left);
+        EmitBinaryExprUsingConcreteSyntax(guardWriter, Type.Bool, preOpString, opString, left,
+          right, callString, staticCallString, postOpString);
         return thenWriter;
 
       } else if (pattern is IdPattern idPattern) {
@@ -701,7 +704,7 @@ namespace Microsoft.Dafny.Compilers {
         var boundVar = idPattern.BoundVar;
         if (!boundVar.Name.StartsWith(IdPattern.WildcardString)) {
           var valueWriter = DeclareLocalVar(IdName(boundVar), boundVar.Type, idPattern.Origin, writer);
-          valueWriter.Write(sourceName);
+          EmitIdentifier(sourceName, valueWriter);
         }
         return writer;
 
@@ -717,7 +720,7 @@ namespace Microsoft.Dafny.Compilers {
           EmitAssignment(disjunctiveMatch, Type.Bool, True, Type.Bool, alternativeWriter);
         }
         writer = EmitIf(out var guardWriter, false, writer);
-        guardWriter.Write(disjunctiveMatch);
+        EmitIdentifier(disjunctiveMatch, guardWriter);
         return writer;
 
       } else {
